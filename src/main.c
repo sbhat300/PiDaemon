@@ -6,7 +6,6 @@
 #include <sys/stat.h>
 #include <poll.h>
 #include <fcntl.h>
-#include <arpa/inet.h> 
 
 #include <spicenet/config.h>
 #include <spicenet/snp.h>
@@ -44,7 +43,7 @@ struct bulk_ft_entry {
 #define APID_BULK_ACK_BIDI     0x035
 
 // APIDs to poll/listen on
-const int NUM_LISTEN_APIDS = 6;
+#define NUM_LISTEN_APIDS 6
 int listen_apids[NUM_LISTEN_APIDS] = {
     APID_CMD_RX, 
     APID_ADCS_TELEM_RX, 
@@ -53,6 +52,14 @@ int listen_apids[NUM_LISTEN_APIDS] = {
     APID_BULK_CTRL_RX, 
     APID_BULK_ACK_BIDI
 };
+
+// Apps to transmit data to OBC
+snp_app_t *app_telem_tx;
+snp_app_t *app_cmd_resp_tx;
+snp_app_t *app_adcs_req_tx;
+snp_app_t *app_bulk_calc_tx;
+snp_app_t *app_bulk_ft_tx;
+snp_app_t *app_bulk_vid_tx;
 
 // Input handler functions
 // All multi-byte fields arrive in Big-Endian, handle this here also
@@ -90,32 +97,37 @@ int send_health_telemetry(uint64_t met, uint8_t state, uint8_t exp_id, float tem
 
 // APID 0x012 
 int send_command_response(uint8_t opcode, uint8_t status) {
-
+    return 0;
 }
 
 // APID 0x021 
 int send_adcs_request(uint8_t request_type, float target_quat[4], float target_rates[3], uint32_t duration) {
 
+    return 0;
 }
 
 // APID 0x030 
 int send_bulk_calculation_data(uint32_t transfer_id, struct bulk_calc_entry *entries, uint32_t num_entries) {
 
+    return 0;
 }
 
 // APID 0x031 
 int send_bulk_force_torque_data(uint32_t transfer_id, struct bulk_ft_entry *entries, uint32_t num_entries) {
 
+    return 0;
 }
 
 // APID 0x032
 int send_bulk_video_data(uint32_t transfer_id, uint8_t *video_buffer, uint32_t total_bytes) {
 
+    return 0;
 }
 
 // APID 0x035
 int send_bulk_ack(uint32_t transfer_id, uint8_t status, uint32_t *missing_chunks, uint32_t num_missing_chunks) {
 
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -141,13 +153,44 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < NUM_LISTEN_APIDS; i++) {
         if (snp_connect(listen_apids[i], &apps[i]) != 0) {
-            fprintf(stderr, "[Failed to connect to apid %d]\n", listen_apids[i]);
+            fprintf(stderr, "[Failed to connect to apid 0x%03X]\n", listen_apids[i]);
             return EXIT_FAILURE;
         }
 
-        printf("[Connected to apid] %d\n", listen_apids[i]);
+        printf("[Connected to apid] 0x%03X\n", listen_apids[i]);
         pollfds[i].fd = apps[i]->read[0]; 
         pollfds[i].events = POLLIN;
+    }
+
+    // Connect to all transmitting APIDs
+    if (snp_connect(APID_TELEM_TX, &app_telem_tx) != 0) {
+        fprintf(stderr, "[Failed to connect to apid 0x%03X]\n", APID_TELEM_TX);
+        return EXIT_FAILURE;
+    }
+
+    if (snp_connect(APID_CMD_RESP_TX, &app_cmd_resp_tx) != 0) {
+        fprintf(stderr, "[Failed to connect to apid 0x%03X]\n", APID_CMD_RESP_TX);
+        return EXIT_FAILURE;
+    }
+
+    if (snp_connect(APID_ADCS_REQ_TX, &app_adcs_req_tx) != 0) {
+        fprintf(stderr, "[Failed to connect to apid 0x%03X]\n", APID_ADCS_REQ_TX);
+        return EXIT_FAILURE;
+    }
+
+    if (snp_connect(APID_BULK_CALC_TX, &app_bulk_calc_tx) != 0) {
+        fprintf(stderr, "[Failed to connect to apid 0x%03X]\n", APID_BULK_CALC_TX);
+        return EXIT_FAILURE;
+    }
+
+    if (snp_connect(APID_BULK_FT_TX, &app_bulk_ft_tx) != 0) {
+        fprintf(stderr, "[Failed to connect to apid 0x%03X]\n", APID_BULK_FT_TX);
+        return EXIT_FAILURE;
+    }
+
+    if (snp_connect(APID_BULK_VID_TX, &app_bulk_vid_tx) != 0) {
+        fprintf(stderr, "[Failed to connect to apid 0x%03X]\n", APID_BULK_VID_TX);
+        return EXIT_FAILURE;
     }
 
     // Event Loop
