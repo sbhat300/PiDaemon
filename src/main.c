@@ -11,6 +11,19 @@
 #include <spicenet/config.h>
 #include <spicenet/snp.h>
 
+// Entries for bulk transfer
+struct bulk_calc_entry {
+    uint64_t mission_time;
+    float    angular_accel[3];
+    float    commanded_torque[4];
+};
+
+struct bulk_ft_entry {
+    uint64_t mission_time;
+    float    force_vector[3];
+    float    torque_vector[3];
+};
+
 // APID Definitions 
 // OBC -> Pi
 #define APID_CMD_RX            0x010
@@ -41,24 +54,68 @@ int listen_apids[NUM_LISTEN_APIDS] = {
     APID_BULK_ACK_BIDI
 };
 
- //Handler functions
+// Input handler functions
 // All multi-byte fields arrive in Big-Endian, handle this here also
+// APID 0x010
 void handle_payload_command(uint8_t *buf, int len) {
 }
 
+// APID 0x020
 void handle_adcs_telemetry(uint8_t *buf, int len) {
 }
 
+// APID 0x022
 void handle_adcs_response(uint8_t *buf, int len) {
 }
 
+// APID 0x033
 void handle_bulk_experiment_table(uint8_t *buf, int len) {
 }
 
+// APID 0x034
 void handle_bulk_control_algo(uint8_t *buf, int len) {
 }
 
+// APID 0x035
 void handle_bulk_ack(uint8_t *buf, int len) {
+}
+
+// Output handler functions
+// These are non blocking so they can snp_write can directly be called here
+
+// APID 0x011 
+int send_health_telemetry(uint64_t met, uint8_t state, uint8_t exp_id, float temp, uint32_t storage) {
+
+}
+
+// APID 0x012 
+int send_command_response(uint8_t opcode, uint8_t status) {
+
+}
+
+// APID 0x021 
+int send_adcs_request(uint8_t request_type, float target_quat[4], float target_rates[3], uint32_t duration) {
+
+}
+
+// APID 0x030 
+int send_bulk_calculation_data(uint32_t transfer_id, struct bulk_calc_entry *entries, uint32_t num_entries) {
+
+}
+
+// APID 0x031 
+int send_bulk_force_torque_data(uint32_t transfer_id, struct bulk_ft_entry *entries, uint32_t num_entries) {
+
+}
+
+// APID 0x032
+int send_bulk_video_data(uint32_t transfer_id, uint8_t *video_buffer, uint32_t total_bytes) {
+
+}
+
+// APID 0x035
+int send_bulk_ack(uint32_t transfer_id, uint8_t status, uint32_t *missing_chunks, uint32_t num_missing_chunks) {
+
 }
 
 int main(int argc, char **argv) {
