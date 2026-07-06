@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <string.h>
+#include <endian.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <poll.h>
@@ -42,6 +44,19 @@ struct bulk_ft_entry {
 // Pi <-> OBC
 #define APID_BULK_ACK_BIDI     0x035
 
+// Bulk Data Transfer Wrapper layout constants
+#define BULK_WRAPPER_HEADER_SIZE 14
+#define MAX_CHUNK_DATA (MAX_PACKET_LENGTH - BULK_WRAPPER_HEADER_SIZE)
+
+#define BULK_CALC_ENTRY_SIZE 36 
+#define MAX_CALC_ENTRIES_PER_CHUNK (MAX_CHUNK_DATA / BULK_CALC_ENTRY_SIZE)
+
+#define BULK_FT_ENTRY_SIZE 32 
+#define MAX_FT_ENTRIES_PER_CHUNK (MAX_CHUNK_DATA / BULK_FT_ENTRY_SIZE)
+
+#define BULK_ACK_HEADER_SIZE 5
+#define MAX_MISSING_CHUNKS ((MAX_PACKET_LENGTH - BULK_ACK_HEADER_SIZE) / 4)
+
 // APIDs to poll/listen on
 #define NUM_LISTEN_APIDS 6
 int listen_apids[NUM_LISTEN_APIDS] = {
@@ -60,6 +75,8 @@ snp_app_t *app_adcs_req_tx;
 snp_app_t *app_bulk_calc_tx;
 snp_app_t *app_bulk_ft_tx;
 snp_app_t *app_bulk_vid_tx;
+snp_app_t *app_bulk_ack; // APID 0x035 is bidirectional
+
 
 // Input handler functions
 // All multi-byte fields arrive in Big-Endian, handle this here also
@@ -87,47 +104,207 @@ void handle_bulk_control_algo(uint8_t *buf, int len) {
 void handle_bulk_ack(uint8_t *buf, int len) {
 }
 
+// Packing helpers
+static inline void pack_u8(uint8_t *buf, size_t *off, uint8_t val) {
+    buf[*off] = val;
+    *off += 1;
+}
+
+static inline void pack_be16(uint8_t *buf, size_t *off, uint16_t val) {
+    uint16_t be = htobe16(val);
+    memcpy(buf + *off, &be, sizeof(be));
+    *off += sizeof(be);
+}
+
+static inline void pack_be32(uint8_t *buf, size_t *off, uint32_t val) {
+    uint32_t be = htobe32(val);
+    memcpy(buf + *off, &be, sizeof(be));
+    *off += sizeof(be);
+}
+
+static inline void pack_be64(uint8_t *buf, size_t *off, uint64_t val) {
+    uint64_t be = htobe64(val);
+    memcpy(buf + *off, &be, sizeof(be));
+    *off += sizeof(be);
+}
+
+static inline void pack_be_float(uint8_t *buf, size_t *off, float val) {
+    uint32_t bits;
+    memcpy(&bits, &val, sizeof(bits));
+    pack_be32(buf, off, bits);
+}
+
+static inline void pack_be_float_array(uint8_t *buf, size_t *off, const float *vals, int n) {
+    for (int i = 0; i < n; i++) {
+        pack_be_float(buf, off, vals[i]);
+    }
+}
+
+// Packs the common Bulk Data Transfer Wrapper header + data returns total frame length
+static int pack_bulk_wrapper(uint8_t *frame, uint32_t transfer_id, uint32_t chunk_seq, uint32_t total_chunks,
+                              const uint8_t *data, uint16_t n) {
+    size_t off = 0;
+    pack_be32(frame, &off, transfer_id);
+    pack_be32(frame, &off, chunk_seq);
+    pack_be32(frame, &off, total_chunks);
+    pack_be16(frame, &off, n);
+    memcpy(frame + off, data, n);
+    off += n;
+    return (int)off;
+}
+
+static size_t pack_calc_entry(uint8_t *buf, const struct bulk_calc_entry *e) {
+    size_t off = 0;
+    pack_be64(buf, &off, e->mission_time);
+    pack_be_float_array(buf, &off, e->angular_accel, 3);
+    pack_be_float_array(buf, &off, e->commanded_torque, 4);
+    return off;
+}
+
+static size_t pack_ft_entry(uint8_t *buf, const struct bulk_ft_entry *e) {
+    size_t off = 0;
+    pack_be64(buf, &off, e->mission_time);
+    pack_be_float_array(buf, &off, e->force_vector, 3);
+    pack_be_float_array(buf, &off, e->torque_vector, 3);
+    return off;
+}
+
 // Output handler functions
 // These are non blocking so they can snp_write can directly be called here
 
-// APID 0x011 
+//TODO: MAKE THE WRITES NON BLOCKING
+// APID 0x011
 int send_health_telemetry(uint64_t met, uint8_t state, uint8_t exp_id, float temp, uint32_t storage) {
+    uint8_t buf[8 + 1 + 1 + 4 + 4];
+    size_t off = 0;
 
+    pack_be64(buf, &off, met);
+    pack_u8(buf, &off, state);
+    pack_u8(buf, &off, exp_id);
+    pack_be_float(buf, &off, temp);
+    pack_be32(buf, &off, storage);
+
+    int ret = snp_write(app_telem_tx, buf, (int)off);
+    return ret < 0 ? ret : 0;
 }
 
-// APID 0x012 
+// APID 0x012
 int send_command_response(uint8_t opcode, uint8_t status) {
-    return 0;
+    uint8_t buf[2];
+    size_t off = 0;
+
+    pack_u8(buf, &off, opcode);
+    pack_u8(buf, &off, status);
+
+    int ret = snp_write(app_cmd_resp_tx, buf, (int)off);
+    return ret < 0 ? ret : 0;
 }
 
-// APID 0x021 
+// APID 0x021
 int send_adcs_request(uint8_t request_type, float target_quat[4], float target_rates[3], uint32_t duration) {
+    uint8_t buf[1 + 16 + 12 + 4];
+    size_t off = 0;
 
-    return 0;
+    pack_u8(buf, &off, request_type);
+    pack_be_float_array(buf, &off, target_quat, 4);
+    pack_be_float_array(buf, &off, target_rates, 3);
+    pack_be32(buf, &off, duration);
+
+    int ret = snp_write(app_adcs_req_tx, buf, (int)off);
+    return ret < 0 ? ret : 0;
 }
 
-// APID 0x030 
+// APID 0x030
 int send_bulk_calculation_data(uint32_t transfer_id, struct bulk_calc_entry *entries, uint32_t num_entries) {
+    uint32_t total_chunks = (num_entries + MAX_CALC_ENTRIES_PER_CHUNK - 1) / MAX_CALC_ENTRIES_PER_CHUNK;
+    uint8_t chunk_data[MAX_CALC_ENTRIES_PER_CHUNK * BULK_CALC_ENTRY_SIZE];
+    uint8_t frame[MAX_PACKET_LENGTH];
+
+    for (uint32_t chunk = 0; chunk < total_chunks; chunk++) {
+        uint32_t start = chunk * MAX_CALC_ENTRIES_PER_CHUNK;
+        uint32_t remaining = num_entries - start;
+        uint32_t count = remaining < MAX_CALC_ENTRIES_PER_CHUNK ? remaining : MAX_CALC_ENTRIES_PER_CHUNK;
+
+        size_t data_off = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            data_off += pack_calc_entry(chunk_data + data_off, &entries[start + i]);
+        }
+
+        int frame_len = pack_bulk_wrapper(frame, transfer_id, chunk, total_chunks, chunk_data, (uint16_t)data_off);
+        int ret = snp_write(app_bulk_calc_tx, frame, frame_len);
+        if (ret < 0) {
+            return ret;
+        }
+    }
 
     return 0;
 }
 
-// APID 0x031 
+// APID 0x031
 int send_bulk_force_torque_data(uint32_t transfer_id, struct bulk_ft_entry *entries, uint32_t num_entries) {
+    uint32_t total_chunks = (num_entries + MAX_FT_ENTRIES_PER_CHUNK - 1) / MAX_FT_ENTRIES_PER_CHUNK;
+    uint8_t chunk_data[MAX_FT_ENTRIES_PER_CHUNK * BULK_FT_ENTRY_SIZE];
+    uint8_t frame[MAX_PACKET_LENGTH];
+
+    for (uint32_t chunk = 0; chunk < total_chunks; chunk++) {
+        uint32_t start = chunk * MAX_FT_ENTRIES_PER_CHUNK;
+        uint32_t remaining = num_entries - start;
+        uint32_t count = remaining < MAX_FT_ENTRIES_PER_CHUNK ? remaining : MAX_FT_ENTRIES_PER_CHUNK;
+
+        size_t data_off = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            data_off += pack_ft_entry(chunk_data + data_off, &entries[start + i]);
+        }
+
+        int frame_len = pack_bulk_wrapper(frame, transfer_id, chunk, total_chunks, chunk_data, (uint16_t)data_off);
+        int ret = snp_write(app_bulk_ft_tx, frame, frame_len);
+        if (ret < 0) {
+            return ret;
+        }
+    }
 
     return 0;
 }
 
 // APID 0x032
 int send_bulk_video_data(uint32_t transfer_id, uint8_t *video_buffer, uint32_t total_bytes) {
+    uint32_t total_chunks = (total_bytes + MAX_CHUNK_DATA - 1) / MAX_CHUNK_DATA;
+    uint8_t frame[MAX_PACKET_LENGTH];
+
+    for (uint32_t chunk = 0; chunk < total_chunks; chunk++) {
+        uint32_t start = chunk * MAX_CHUNK_DATA;
+        uint32_t remaining = total_bytes - start;
+        uint16_t count = (uint16_t)(remaining < MAX_CHUNK_DATA ? remaining : MAX_CHUNK_DATA);
+
+        int frame_len = pack_bulk_wrapper(frame, transfer_id, chunk, total_chunks, video_buffer + start, count);
+        int ret = snp_write(app_bulk_vid_tx, frame, frame_len);
+        if (ret < 0) {
+            return ret;
+        }
+    }
 
     return 0;
 }
 
 // APID 0x035
 int send_bulk_ack(uint32_t transfer_id, uint8_t status, uint32_t *missing_chunks, uint32_t num_missing_chunks) {
+    uint8_t buf[MAX_PACKET_LENGTH];
+    size_t off = 0;
 
-    return 0;
+    if (status == 0x00) {
+        num_missing_chunks = 0;
+    } else if (num_missing_chunks > MAX_MISSING_CHUNKS) {
+        num_missing_chunks = MAX_MISSING_CHUNKS;
+    }
+
+    pack_be32(buf, &off, transfer_id);
+    pack_u8(buf, &off, status);
+    for (uint32_t i = 0; i < num_missing_chunks; i++) {
+        pack_be32(buf, &off, missing_chunks[i]);
+    }
+
+    int ret = snp_write(app_bulk_ack, buf, (int)off);
+    return ret < 0 ? ret : 0;
 }
 
 int main(int argc, char **argv) {
@@ -158,8 +335,12 @@ int main(int argc, char **argv) {
         }
 
         printf("[Connected to apid] 0x%03X\n", listen_apids[i]);
-        pollfds[i].fd = apps[i]->read[0]; 
+        pollfds[i].fd = apps[i]->read[0];
         pollfds[i].events = POLLIN;
+
+        if (listen_apids[i] == APID_BULK_ACK_BIDI) {
+            app_bulk_ack = apps[i];
+        }
     }
 
     // Connect to all transmitting APIDs
