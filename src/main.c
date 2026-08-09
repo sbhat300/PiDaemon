@@ -11,6 +11,9 @@
 
 #include <spicenet/config.h>
 #include <spicenet/snp.h>
+#include <payload_state.h>
+
+#define STATE_FILE_PATH "/var/lib/piobc/state.bin"
 
 // Entries for bulk transfer
 struct bulk_calc_entry {
@@ -76,7 +79,6 @@ snp_app_t *app_bulk_calc_tx;
 snp_app_t *app_bulk_ft_tx;
 snp_app_t *app_bulk_vid_tx;
 snp_app_t *app_bulk_ack; // APID 0x035 is bidirectional
-
 
 // Input handler functions
 // All multi-byte fields arrive in Big-Endian, handle this here also
@@ -206,9 +208,11 @@ int send_adcs_request(uint8_t request_type, float target_quat[4], float target_r
     size_t off = 0;
 
     pack_u8(buf, &off, request_type);
-    pack_be_float_array(buf, &off, target_quat, 4);
-    pack_be_float_array(buf, &off, target_rates, 3);
-    pack_be32(buf, &off, duration);
+    if(request_type != 0xA1 && request_type != 0xA0) {
+        pack_be_float_array(buf, &off, target_quat, 4);
+        pack_be_float_array(buf, &off, target_rates, 3);
+        pack_be32(buf, &off, duration);
+    }
 
     int ret = snp_write(app_adcs_req_tx, buf, (int)off);
     return ret < 0 ? ret : 0;
@@ -309,8 +313,16 @@ int send_bulk_ack(uint32_t transfer_id, uint8_t status, uint32_t *missing_chunks
 
 int main(int argc, char **argv) {
     int fd;
-    const char *portname = "/dev/ttyS0"; 
+    const char *portname = "/dev/ttyS0";
     uint8_t rx_buffer[512]; // Max payload MTU 512 bytes
+
+    satellite_state_t boot_state;
+    if (sat_state_init(STATE_FILE_PATH, &boot_state) != 0) {
+        perror("[Failed to open payload state store]");
+        return EXIT_FAILURE;
+    }
+    printf("[Payload State Restored] op_state=0x%02X active_experiment_id=%u dce_authority=%u\n",
+           boot_state.op_state, boot_state.active_experiment_id, boot_state.dce_authority_held);
 
     if (snp_open(&fd, (char *)portname) != 0) {
         perror("[Failed to open serial connection]");

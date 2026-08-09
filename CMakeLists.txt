@@ -3,7 +3,8 @@ project(Communications)
 
 SET(COMPILER_FLAGS "-fsanitize=address,undefined")
 
-set(PROJECT_SOURCES     ${PROJECT_SOURCE_DIR}/src/main.c)
+set(PROJECT_SOURCES     ${PROJECT_SOURCE_DIR}/src/main.c
+                        ${PROJECT_SOURCE_DIR}/src/payload_state.c)
 
 add_executable(Communications ${PROJECT_SOURCES})
 
