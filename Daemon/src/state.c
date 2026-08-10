@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 
-#include <payload_state.h>
+#include "daemon/state.h"
+#include "daemon/util.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -9,25 +10,23 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/file.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
-#define SAT_STATE_MAGIC   0x53415453u /* "SATS" */
-#define SAT_STATE_VERSION 2u
+#define SAT_STATE_MAGIC   0x53415453u 
+#define SAT_STATE_VERSION 1u
 
-// On-disk record. 
-// Detects a missing, foreign, stale-version, or torn file and
-// falls back to safe defaults 
+// On-disk record. Detects a missing, foreign, stale-version, or torn file
+// and falls back to safe defaults.
 typedef struct {
     uint32_t           magic;
     uint32_t           version;
     satellite_state_t  data;
-    uint32_t           checksum; 
+    uint32_t           checksum;
 } sat_state_record_t;
 
-static int      g_lock_fd = -1;
-static char     g_state_path[PATH_MAX];
-static char     g_tmp_path[PATH_MAX];
+static int  g_lock_fd = -1;
+static char g_state_path[PATH_MAX];
+static char g_tmp_path[PATH_MAX];
 
 static uint32_t fnv1a(const void *buf, size_t len) {
     const uint8_t *p = (const uint8_t *)buf;
@@ -39,31 +38,9 @@ static uint32_t fnv1a(const void *buf, size_t len) {
     return hash;
 }
 
-// Creates `dir` and any missing parent directories
-static int mkdir_p(const char *dir) {
-    char buf[PATH_MAX];
-    strncpy(buf, dir, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
-
-    for (char *p = buf + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(buf, 0755) != 0 && errno != EEXIST) {
-                return -1;
-            }
-            *p = '/';
-        }
-    }
-
-    if (mkdir(buf, 0755) != 0 && errno != EEXIST) {
-        return -1;
-    }
-    return 0;
-}
-
 static void state_defaults(satellite_state_t *s) {
     memset(s, 0, sizeof(*s));
-    s->op_state             = PAYLOAD_STATE_IDLE;
+    s->op_state             = SAT_OP_IDLE;
     s->active_experiment_id = 0;
     s->dce_authority_held   = 0;
     s->last_updated_met     = 0;
@@ -168,14 +145,16 @@ int sat_state_init(const char *path, satellite_state_t *out) {
     char dir_buf[PATH_MAX];
     strncpy(dir_buf, g_state_path, sizeof(dir_buf) - 1);
     dir_buf[sizeof(dir_buf) - 1] = '\0';
-    if (mkdir_p(dirname(dir_buf)) != 0) {
+    if (daemon_ensure_dir(dirname(dir_buf)) != 0) {
         return -1;
     }
 
     char lock_path[PATH_MAX];
     snprintf(lock_path, sizeof(lock_path), "%s.lock", path);
 
-    g_lock_fd = open(lock_path, O_CREAT | O_RDWR, 0644);
+    // O_CLOEXEC: forked managed processes must not inherit this fd, or a
+    // surviving child keeps the state lock held after the daemon exits.
+    g_lock_fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (g_lock_fd < 0) {
         return -1;
     }
