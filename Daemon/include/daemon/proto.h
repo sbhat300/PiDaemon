@@ -28,7 +28,6 @@ typedef enum {
 typedef struct {
     uint32_t length;   // bytes of payload following this header
     uint16_t type;     // daemon_msg_type_t
-    uint16_t reserved;
 } daemon_hdr_t;
 
 typedef struct {

@@ -213,7 +213,7 @@ static void flush_tx(client_conn_t *c) {
 
 static void queue_send(client_conn_t *c, uint16_t type, const void *payload, uint32_t len) {
     uint8_t frame[sizeof(daemon_hdr_t) + DAEMON_MAX_MSG_PAYLOAD];
-    daemon_hdr_t hdr = { .length = len, .type = type, .reserved = 0 };
+    daemon_hdr_t hdr = { .length = len, .type = type };
     memcpy(frame, &hdr, sizeof(hdr));
     if (len > 0) {
         memcpy(frame + sizeof(hdr), payload, len);

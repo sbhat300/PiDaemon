@@ -39,10 +39,7 @@ int daemon_read_all(int fd, void *buf, size_t len) {
 }
 
 int daemon_send(int fd, uint16_t type, const void *payload, uint32_t len) {
-    daemon_hdr_t hdr;
-    hdr.length   = len;
-    hdr.type     = type;
-    hdr.reserved = 0;
+    daemon_hdr_t hdr = { .length = len, .type = type };
 
     if (daemon_write_all(fd, &hdr, sizeof(hdr)) != 0) {
         return -1;
