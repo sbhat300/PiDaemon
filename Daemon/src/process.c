@@ -65,10 +65,42 @@ int pm_start_all(process_manager_t *pm) {
     return started;
 }
 
+int pm_start_one(process_manager_t *pm, const char *name) {
+    for (int i = 0; i < pm->count; i++) {
+        managed_process_t *mp = &pm->procs[i];
+        if (strcmp(mp->spec.name, name) != 0) {
+            continue;
+        }
+        if (mp->pid != 0) {
+            return -1; // already running
+        }
+
+        time_t now = time(NULL);
+        mp->attempts     = 0;
+        mp->window_start = now;
+        mp->next_start   = now;
+        mp->given_up      = 0;
+
+        return start_one(mp);
+    }
+    return -1; // no process registered with that name
+}
+
 void pm_tick(process_manager_t *pm) {
     time_t now = time(NULL);
     for (int i = 0; i < pm->count; i++) {
         managed_process_t *mp = &pm->procs[i];
+
+        if (mp->shutting_down) {
+            if (mp->pid > 0 && !mp->kill_sent && now >= mp->kill_deadline) {
+                fprintf(stderr, "[ProcMgr] '%s' pid=%d did not exit in time, killing\n", mp->spec.name,
+                        (int)mp->pid);
+                kill(mp->pid, SIGKILL);
+                mp->kill_sent = 1;
+            }
+            continue;
+        }
+
         if (mp->pid == 0 && !mp->given_up && now >= mp->next_start) {
             start_one(mp);
         }
@@ -100,6 +132,13 @@ int pm_reap(process_manager_t *pm) {
             continue; // not a process we're supervising
         }
         mp->pid = 0;
+
+        if (mp->shutting_down) {
+            fprintf(stderr, "[ProcMgr] '%s' pid=%d exited (shutdown complete)\n", mp->spec.name, (int)pid);
+            mp->shutting_down = 0;
+            mp->kill_sent     = 0;
+            continue; // intentional stop - restart policy doesn't apply
+        }
 
         int failed = WIFSIGNALED(status) || (WIFEXITED(status) && WEXITSTATUS(status) != 0);
         fprintf(stderr, "[ProcMgr] '%s' pid=%d exited (%s)\n", mp->spec.name, (int)pid,
@@ -134,6 +173,9 @@ int pm_reap(process_manager_t *pm) {
 
 void pm_shutdown_all(process_manager_t *pm, int timeout_ms) {
     for (int i = 0; i < pm->count; i++) {
+        // Prevent pm_tick from racing a restart in behind us; pm_start_one
+        // or pm_start_all clears this if a process is started again.
+        pm->procs[i].given_up = 1;
         if (pm->procs[i].pid > 0) {
             kill(pm->procs[i].pid, SIGTERM);
         }
@@ -184,4 +226,32 @@ void pm_shutdown_all(process_manager_t *pm, int timeout_ms) {
             pm->procs[i].pid = 0;
         }
     }
+}
+
+int pm_shutdown_one(process_manager_t *pm, const char *name, int timeout_ms) {
+    managed_process_t *mp = NULL;
+    for (int i = 0; i < pm->count; i++) {
+        if (strcmp(pm->procs[i].spec.name, name) == 0) {
+            mp = &pm->procs[i];
+            break;
+        }
+    }
+    if (mp == NULL) {
+        return -1; // no process registered with that name
+    }
+
+    // Prevent pm_tick from racing a restart in behind us; pm_start_one
+    // clears this if the caller wants it back.
+    mp->given_up = 1;
+
+    if (mp->pid <= 0) {
+        return 0;
+    }
+
+    kill(mp->pid, SIGTERM);
+    mp->shutting_down = 1;
+    mp->kill_sent      = 0;
+    mp->kill_deadline  = time(NULL) + (timeout_ms + 999) / 1000;
+
+    return 0;
 }
